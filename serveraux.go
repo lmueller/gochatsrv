@@ -1,7 +1,7 @@
 // project: gochatsrv
 // file: serveraux.go
 //
-// # Auxiliary functions for server such as watchdogs/event management
+// # Auxiliary functions for server such as watchdogs/event management, general net or communication functions
 //
 // Date: 2024-10-28
 // Author: Lutz Mueller <lmuellerhome@gmail.com>
@@ -13,7 +13,7 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
+	"net"
 	"strings"
 	"time"
 )
@@ -29,9 +29,21 @@ var (
 	}
 )
 
+// during shutdown, a ticker is responsible for broadcasting periodic shutdown warnings in an attempt to get users
+// to log out.
+
 // Channels for communicating results back to the main function
 var timedLoginNickChan = make(chan string, 1)
 var timedLoginErrorChan = make(chan error, 1)
+
+func resetTimedLoginChannels() {
+	for len(timedLoginNickChan) > 0 {
+		<-timedLoginNickChan
+	}
+	for len(timedLoginErrorChan) > 0 {
+		<-timedLoginErrorChan
+	}
+}
 
 func countdownWarnings(userManager *UserManager, remainingTime int) {
 	ticker := time.NewTicker(time.Second)
@@ -62,6 +74,8 @@ func countdownWarnings(userManager *UserManager, remainingTime int) {
 	}
 }
 
+// During the login phase, allow users to select unique nicknames, but in a rate-controlled way (number of tries
+// and timeout, so that the server is prevented from being flooded prior to successful authentication.
 func queryNicknameWithTimeout(reader *bufio.Reader, timeoutChan <-chan time.Time) (string, error) {
 	// Initiate a non-blocking read to check for input
 	go func() {
@@ -81,7 +95,6 @@ func queryNicknameWithTimeout(reader *bufio.Reader, timeoutChan <-chan time.Time
 			timedLoginErrorChan <- err
 		}
 	}()
-
 	select {
 	case nickname := <-timedLoginNickChan:
 		nickname = sanitizeNickname(nickname)
@@ -96,15 +109,25 @@ func queryNicknameWithTimeout(reader *bufio.Reader, timeoutChan <-chan time.Time
 	}
 }
 
-func resetTimedLoginChannels() {
-	for len(timedLoginNickChan) > 0 {
-		<-timedLoginNickChan
+func sendMessageToConn(conn net.Conn, msgs ...string) error {
+	w := bufio.NewWriter(conn)
+	for _, msg := range msgs {
+		if _, err := fmt.Fprintln(w, msg); err != nil {
+			return err
+		}
 	}
-	for len(timedLoginErrorChan) > 0 {
-		<-timedLoginErrorChan
-	}
+	return w.Flush()
 }
 
-func logEvent(event string) {
-	log.Println(event)
+func isLocalIP(ip net.IP) bool {
+	for _, network := range localIPRANGES {
+		_, ipnetw, err := net.ParseCIDR(network)
+		if err != nil {
+			continue // Skip invalid CIDR
+		}
+		if ipnetw.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

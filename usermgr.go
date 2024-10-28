@@ -1,7 +1,8 @@
 // project: gochatsrv
 // file: usermgr.go
 //
-// # user management structures, communications, and UserManager object
+// # user management structures, communications, and UserManager object. Implementation of many
+// # server commands called by the server command dispatcher function.
 //
 // Date: 2024-10-28
 // Author: Lutz Mueller <lmuellerhome@gmail.com>
@@ -78,7 +79,6 @@ func (um *UserManager) assignPrivilege(nickname string, newPrivilege int) *User 
 			return user
 		}
 	}
-
 	return nil
 }
 
@@ -152,7 +152,7 @@ func (um *UserManager) broadcastMessageExcept(excludedUserNickname string, msgs 
 	}
 }
 
-// handlePrivateMessage handles the sending of a private message.
+// handlePrivateMessage handles the sending of a private message, compare /msg,/whisper or similar
 func (um *UserManager) handlePrivateMessage(sender *User, targetNickname, message string) {
 	targetUser := um.FindUser(targetNickname)
 	if targetUser == nil {

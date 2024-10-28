@@ -178,59 +178,6 @@ func (s *Server) parseCommand(user *User, input string) ServerCommand {
 	}
 }
 
-func (s *Server) Run() {
-	var err error
-	s.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", serverPort))
-	if err != nil {
-		log.Fatalf("Error starting server: %v", err)
-	}
-	defer func(listener net.Listener) {
-		err := listener.Close()
-		if err != nil {
-			log.Printf("Error closing listener: %v", err)
-		}
-	}(s.listener)
-
-	s.commands = make(chan ServerCommand)
-	s.userManager = &UserManager{
-		users: make(map[string]*User),
-	}
-
-	// Start up goroutines for command handling
-	go s.commandDispatcher()
-
-	// Handle graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		// Here we manually send a shutdown command with a 10-second delay
-		s.commands <- ServerCommand{
-			Command: "shutdown",
-			User:    nil, // No user associated with this command
-			Args:    []string{"10"},
-		}
-	}()
-
-	logEvent("Server running on :8080")
-
-	for {
-		conn, err := s.listener.Accept()
-		if err != nil {
-			if err.Error() == "use of closed network connection" {
-				logEvent(fmt.Sprintf("Server stopped accepting new connections."))
-				return
-			}
-			if !s.shutdownOngoing {
-				logEvent(fmt.Sprintf("Error accepting connection: %v", err))
-			}
-			return
-		}
-
-		go s.handleNewClient(conn)
-	}
-}
-
 func (s *Server) commandDispatcher() {
 	for cmd := range s.commands {
 		switch cmd.Command {
@@ -370,4 +317,57 @@ func (s *Server) handleNewClient(conn net.Conn) {
 	msg := "Login attempts exhausted, closing connection."
 	logEvent(msg)
 	_ = sendMessageToConn(conn, msg)
+}
+
+func (s *Server) Run() {
+	var err error
+	s.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", serverPort))
+	if err != nil {
+		log.Fatalf("Error starting server: %v", err)
+	}
+	defer func(listener net.Listener) {
+		err := listener.Close()
+		if err != nil {
+			log.Printf("Error closing listener: %v", err)
+		}
+	}(s.listener)
+
+	s.commands = make(chan ServerCommand)
+	s.userManager = &UserManager{
+		users: make(map[string]*User),
+	}
+
+	// Start up goroutines for command handling
+	go s.commandDispatcher()
+
+	// Handle graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		// Here we manually send a shutdown command with a 10-second delay
+		s.commands <- ServerCommand{
+			Command: "shutdown",
+			User:    nil, // No user associated with this command
+			Args:    []string{"10"},
+		}
+	}()
+
+	logEvent("Server running on :8080")
+
+	for {
+		conn, err := s.listener.Accept()
+		if err != nil {
+			if err.Error() == "use of closed network connection" {
+				logEvent(fmt.Sprintf("Server stopped accepting new connections."))
+				return
+			}
+			if !s.shutdownOngoing {
+				logEvent(fmt.Sprintf("Error accepting connection: %v", err))
+			}
+			return
+		}
+
+		go s.handleNewClient(conn)
+	}
 }

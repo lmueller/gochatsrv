@@ -11,35 +11,14 @@
 package main
 
 import (
-	"bufio"
 	"errors"
-	"fmt"
-	"net"
+	"log"
 	"regexp"
 	"strings"
 )
 
-func sendMessageToConn(conn net.Conn, msgs ...string) error {
-	w := bufio.NewWriter(conn)
-	for _, msg := range msgs {
-		if _, err := fmt.Fprintln(w, msg); err != nil {
-			return err
-		}
-	}
-	return w.Flush()
-}
-
-func isLocalIP(ip net.IP) bool {
-	for _, network := range localIPRANGES {
-		_, ipnetw, err := net.ParseCIDR(network)
-		if err != nil {
-			continue // Skip invalid CIDR
-		}
-		if ipnetw.Contains(ip) {
-			return true
-		}
-	}
-	return false
+func logEvent(event string) {
+	log.Println(event)
 }
 
 func validateNickname(nickname string) error {
