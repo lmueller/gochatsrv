@@ -1,3 +1,3 @@
-module local/lrn2
+module local/gochatsrv
 
 go 1.23.2
