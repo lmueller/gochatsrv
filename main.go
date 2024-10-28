@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,8 +23,9 @@ const (
 	maxLoginAttempts = 3
 	loginTimeout     = 10 * time.Second
 
-	ErrPrivilege       = "This is a system command, must be admin user to execute"
-	ErrIllegalNickname = "Illegal nickname"
+	ErrPrivilege           = "this is a system command, must be admin user to execute"
+	ErrIllegalNickname     = "illegal nickname"
+	ErrInvalidShutdownTime = "invalid shutdown time, specify <#seconds>"
 )
 
 var (
@@ -63,6 +65,7 @@ type ServerCommand struct {
 // Channels for communicating results back to the main function
 var timedLoginNickChan = make(chan string, 1)
 var timedLoginErrorChan = make(chan error, 1)
+var shutdownOngoing = false
 
 func logEvent(event string) {
 	log.Println(event)
@@ -229,17 +232,18 @@ func queryNicknameWithTimeout(reader *bufio.Reader, timeoutChan <-chan time.Time
 	case err := <-timedLoginErrorChan:
 		return "", err
 	case <-timeoutChan:
-		return "", fmt.Errorf("Timeout")
+		return "", fmt.Errorf("timeout")
 	}
 }
 
 func sanitizeNickname(nickname string) string {
-	// Remove unwanted characters
+	// Remove unwanted characters. Used during login.
 	nickname = strings.ReplaceAll(nickname, " ", "")
 	nickname = strings.ReplaceAll(nickname, `\`, "")
 	return strings.TrimRight(nickname, "\r\n")
 }
 
+/*
 func queryNickname(conn net.Conn, reader *bufio.Reader) (string, error) {
 	// non-timed version, may be outdated
 	for {
@@ -265,6 +269,7 @@ func queryNickname(conn net.Conn, reader *bufio.Reader) (string, error) {
 		return nickname, nil
 	}
 }
+*/
 
 func (um *UserManager) generateUserList(requestingUser *User) string {
 	um.mu.Lock()
@@ -414,29 +419,114 @@ func handleMessages(messages <-chan Message, userManager *UserManager) {
 	}
 }
 
-func terminateServer(ln net.Listener, userManager *UserManager, commands chan<- ServerCommand) {
-	// Close the listener to prevent new connections
-	err := ln.Close()
-	if err != nil {
-		log.Fatalf("Error terminating server: %v", err)
-	}
+func countdownWarnings(userManager *UserManager, remainingTime int) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	const Minute = 60
 
-	// Signal to stop processing commands by closing the channel
-	close(commands)
+	for remainingTime > 0 {
+		select {
+		case <-ticker.C:
+			remainingTime--
 
-	// Lock the UserManager to ensure thread safety
-	userManager.mu.Lock()
-	defer userManager.mu.Unlock()
-
-	// Close all user connections
-	for _, user := range userManager.users {
-		if err := user.conn.Close(); err != nil {
-			logEvent(fmt.Sprintf("Error closing connection for user %s: %v", user.nickname, err))
+			if remainingTime > 15*Minute { // More than 15 minutes
+				if remainingTime%(15*Minute) == 0 {
+					minutes := remainingTime / Minute
+					userManager.broadcastMessage(fmt.Sprintf("System Notice: SHUTDOWN in %d minutes", minutes))
+				}
+			} else if remainingTime <= 15*Minute && remainingTime > 1*Minute { // Between 1 and 15 minutes
+				if remainingTime%60 == 0 {
+					minutes := remainingTime / 60
+					userManager.broadcastMessage(fmt.Sprintf("System Notice: SHUTDOWN in %d minutes. Please log out now.", minutes))
+				}
+			} else if remainingTime <= 1*Minute { // Less than 1 minute
+				if remainingTime%10 == 0 && remainingTime > 0 {
+					userManager.broadcastMessage(fmt.Sprintf("System Notice: SHUTDOWN IMMINENT in %d seconds. LOG OUT NOW!", remainingTime))
+				}
+			}
 		}
 	}
+}
 
-	// Log server termination
-	logEvent("Server terminated. Closing all connections.")
+func terminateServer(ln net.Listener, userManager *UserManager, commands chan<- ServerCommand, seconds int) {
+	if seconds > 0 {
+		msg := fmt.Sprintf("Server shutdown has been initiated; server will shut down in %d minutes, %d seconds.", seconds/60, seconds%60)
+		log.Println(msg)
+		userManager.broadcastMessage(msg)
+
+		// Start the warning goroutine
+		go countdownWarnings(userManager, seconds)
+
+		// This goroutine will handle the actual shutdown after the countdown
+		go func() {
+			time.Sleep(time.Duration(seconds) * time.Second)
+			terminateServerNow(ln, userManager, commands)
+		}()
+	} else {
+		// If no countdown is needed, shut down immediately
+		terminateServerNow(ln, userManager, commands)
+	}
+}
+
+func waitForConnectionsClosed(wg *sync.WaitGroup) time.Duration {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return 0 // No need to wait
+	case <-time.After(1 * time.Millisecond):
+		return 5 * time.Second // Wait up to 5 seconds if not done instantly
+	}
+}
+
+func terminateServerNow(ln net.Listener, userManager *UserManager, commands chan<- ServerCommand) {
+	// Notify users that the server is shutting down immediately
+	shutdownOngoing = true
+	msg := "System Notice: Server is shutting down NOW. Please reconnect later."
+	userManager.broadcastMessage(msg)
+	logEvent(msg)
+	defer func() {
+		userManager.mu.Unlock()
+	}()
+
+	// Close the listener
+	if err := ln.Close(); err != nil {
+		logEvent(fmt.Sprintf("Error closing listener: %v", err))
+	}
+	close(commands)
+
+	// Gracefully close all user connections
+	userManager.mu.Lock()
+
+	var wg sync.WaitGroup
+	for _, user := range userManager.users {
+		wg.Add(1)
+		go func(u *User) {
+			defer wg.Done()
+			if tcpConn, ok := u.conn.(*net.TCPConn); ok {
+				err := tcpConn.SetLinger(0)
+				if err != nil {
+					logEvent(fmt.Sprintf("Error closing waitgroup %v", err))
+					return
+				}
+			}
+			err := u.conn.Close()
+			if err != nil {
+				logEvent(fmt.Sprintf("Error closing connection: %v", err))
+				return
+			}
+		}(user)
+	}
+
+	select {
+	case <-time.After(5 * time.Second):
+		logEvent("Timeout waiting for connections to close, forcing shutdown.")
+	case <-time.After(waitForConnectionsClosed(&wg)):
+		logEvent("All connections closed gracefully.")
+	}
 }
 
 func handleWhoAmI(user *User, um *UserManager) {
@@ -495,7 +585,7 @@ func handleNewNick(user *User, newNickname string, userManager *UserManager) {
 	userManager.broadcastMessage(fmt.Sprintf("%s is now: %s", user.nickname, newNickname))
 }
 
-func commandDispatcher(userManager *UserManager, commands <-chan ServerCommand) {
+func commandDispatcher(listener net.Listener, userManager *UserManager, commands chan ServerCommand) {
 	for cmd := range commands {
 		switch cmd.Command {
 		case "whoami":
@@ -540,6 +630,22 @@ func commandDispatcher(userManager *UserManager, commands <-chan ServerCommand) 
 				_ = userManager.sendMessageToUser(cmd.User, "Please provide a new nickname. Use: /nick <newNickname>")
 			}
 			continue
+		case "shutdown":
+			var cts int = 0
+			var err error
+			if len(cmd.Args) > 0 {
+				cts, err = strconv.Atoi(cmd.Args[0])
+				if err != nil || cts < 0 {
+					err := userManager.sendMessageToUser(cmd.User, ErrInvalidShutdownTime)
+					if err != nil {
+						logEvent(fmt.Sprintf("Error sending feedback during shudown command: %s", err))
+					}
+					continue
+				}
+				// Directly call terminateServer here without sending a command
+				terminateServer(listener, userManager, commands, cts)
+			}
+			return // Exit commandDispatcher to stop processing commands
 		default:
 			logEvent(fmt.Sprintf("Unknown command received from user %s: %s", cmd.User.nickname, cmd.Command))
 			_ = userManager.sendMessageToUser(cmd.User, "Unknown command.")
@@ -654,7 +760,7 @@ func main() {
 	}
 	defer func() {
 		err := listener.Close()
-		if err != nil {
+		if err != nil && !shutdownOngoing {
 			logEvent(fmt.Sprintf("Error closing listener: %v", err))
 		}
 	}()
@@ -662,19 +768,21 @@ func main() {
 		users: make(map[string]*User),
 	}
 	commands := make(chan ServerCommand)
-	messages := make(chan Message)
 
-	// Start up goroutines for command and message handling
-	go commandDispatcher(userManager, commands)
-	go handleMessages(messages, userManager)
+	// Start up goroutines for command handling
+	go commandDispatcher(listener, userManager, commands)
 
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		terminateServer(listener, userManager, commands)
-		os.Exit(0)
+		// Here we manually send a shutdown command with a 10-second delay
+		commands <- ServerCommand{
+			Command: "shutdown",
+			User:    nil, // No user associated with this command
+			Args:    []string{"10"},
+		}
 	}()
 
 	logEvent("Server running on :8080")
@@ -686,8 +794,10 @@ func main() {
 				logEvent(fmt.Sprintf("Server stopped accepting new connections."))
 				return
 			}
-			logEvent(fmt.Sprintf("Error accepting connection: %v", err))
-			continue
+			if !shutdownOngoing {
+				logEvent(fmt.Sprintf("Error accepting connection: %v", err))
+			}
+			return
 		}
 
 		go handleNewClient(conn, userManager, commands)
