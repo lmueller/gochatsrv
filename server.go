@@ -29,7 +29,7 @@ import (
 const (
 	serverPort             = 8080
 	maxLoginAttempts       = 3
-	loginTimeout           = 10 * time.Second
+	loginTimeout           = 30
 	serverName             = "ChatServer"
 	ErrPrivilege           = "this is a system command, must be admin user to execute"
 	ErrIllegalNickname     = "illegal nickname"
@@ -221,6 +221,14 @@ func (s *ChatServer) handleTest(user *User) {
 // and dispatches them to the appropriate handler functions based on the command name.
 func (s *ChatServer) commandDispatcher() {
 	for cmd := range s.commands {
+		if cmd.User == nil {
+			// logEvent("Received command with nil user")
+			// happens twice during SIGTERM shutdown. OK to suppress warning
+			continue
+		}
+		if cmd.Command == "" {
+			continue // Skip empty commands
+		}
 		switch cmd.Command {
 		case "help":
 			s.handleHelp(cmd.User)
@@ -305,6 +313,7 @@ func (s *ChatServer) commandDispatcher() {
 			_ = s.userManager.sendMessageToUser(cmd.User, "Unknown command.")
 		}
 	}
+	log.Println("Command dispatcher stopped.")
 }
 
 func (s *ChatServer) handleNewClient(conn net.Conn) {
@@ -315,9 +324,9 @@ func (s *ChatServer) handleNewClient(conn net.Conn) {
 		}
 	}()
 
-	_ = sendMessageToConn(conn, fmt.Sprintf("Welcome to %s Please enter your nickname: ", serverName))
+	_ = sendMessageToConn(conn, fmt.Sprintf("Welcome to %s. Please enter your username: ", serverName))
 	reader := bufio.NewReader(conn)
-	timeoutChan := time.After(loginTimeout)
+	timeoutChan := time.After(loginTimeout * time.Second)
 
 	for attempts := 0; attempts < maxLoginAttempts; attempts++ {
 		resetTimedLoginChannels()
@@ -328,7 +337,7 @@ func (s *ChatServer) handleNewClient(conn net.Conn) {
 			_ = sendMessageToConn(conn, msg)
 			return
 		default:
-			nickname, err := queryNicknameWithTimeout(reader, timeoutChan)
+			username, err := queryNicknameWithTimeout(reader, timeoutChan)
 			if err != nil {
 				if err.Error() == "timeout" {
 					msg := "Login period exceeded, connection closed."
@@ -336,49 +345,53 @@ func (s *ChatServer) handleNewClient(conn net.Conn) {
 					_ = sendMessageToConn(conn, msg)
 					return
 				}
-				logEvent(fmt.Sprintf("Error querying nickname: %v", err))
+				logEvent(fmt.Sprintf("Error querying username: %v", err))
 				return
 			}
 
-			// Check if the nickname already exists, case-insensitive
-			if existingUser := s.userManager.FindUser(nickname); existingUser != nil {
-				if sendErr := sendMessageToConn(conn, "Nickname already in use. Please try another."); sendErr != nil {
-					logEvent(fmt.Sprintf("Error sending message to client: %v", sendErr))
-					return
-				}
-				continue // Try again
+			_ = sendMessageToConn(conn, "Please enter your password: ")
+			password, err := reader.ReadString('\n')
+			if err != nil {
+				logEvent(fmt.Sprintf("Error reading password: %v", err))
+				return
+			}
+			password = strings.TrimSpace(password)
+
+			user, err := authenticateUser(DB, username, password)
+			if err != nil {
+				_ = sendMessageToConn(conn, "Invalid username or password. Please try again.")
+				continue
 			}
 
-			user := &User{
-				conn:        conn,
-				nickname:    nickname,
-				privilege:   0,
-				lastMsgFrom: "",
-			}
-
-			if s.userManager.addUser(user) {
-				// Success, handle user setup here
-				if strings.EqualFold(nickname, "admin") {
-					ip, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
-					userIP := net.ParseIP(ip)
-					if userIP != nil && isLocalIP(userIP) {
-						s.userManager.assignPrivilege(nickname, 1)
+			// Loop until a unique nickname is chosen
+			for s.userManager.FindUser(username) != nil {
+				_ = sendMessageToConn(conn, "Username already in use. Please enter a different nickname: ")
+				newNickname, err := queryNicknameWithTimeout(reader, timeoutChan)
+				if err != nil {
+					if err.Error() == "timeout" {
+						msg := "Login period exceeded, connection closed."
+						logEvent(msg)
+						_ = sendMessageToConn(conn, msg)
+						return
 					}
-				}
-				s.userManager.broadcastMessage(fmt.Sprintf("%s has joined the chat", nickname))
-				s.handleUserInput(user, reader)
-				return
-			} else {
-				// This should not happen given the above check, but included for completeness
-				if sendErr := sendMessageToConn(conn, "Nickname already in use. Please try another."); sendErr != nil {
-					logEvent(fmt.Sprintf("Error sending message to client: %v", sendErr))
+					logEvent(fmt.Sprintf("Error querying nickname: %v", err))
 					return
 				}
+				username = strings.TrimSpace(newNickname)
 			}
+
+			// User authenticated successfully with a unique nickname
+			user.nickname = username
+			user.conn = conn
+			_ = sendMessageToConn(conn, fmt.Sprintf("Welcome to %s! You are now known as %s.", serverName, user.nickname))
+			s.userManager.addUser(user)
+			s.userManager.broadcastMessage(fmt.Sprintf("%s has joined the chat", user.nickname))
+			s.handleUserInput(user, reader)
+			return
 		}
 	}
 
-	// If we reach here, user failed to choose a valid nickname
+	// If we reach here, user failed to authenticate
 	msg := "Login attempts exhausted, closing connection."
 	logEvent(msg)
 	_ = sendMessageToConn(conn, msg)

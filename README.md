@@ -4,11 +4,14 @@
 
 ## Features
 
-- Multi-user chat server
-- User management (login, logout, nickname change)
-- Admin commands (kick, shutdown)
-- Private messaging
-- Graceful server shutdown
+robust concurrency,
+simple privilege model
+broadcast/single channel (for now)
+login/pw through sqlite3,
+terminal colors through github.com/lmueller/termcolor
+timeable shutdown with warning message ticker
+features: /who, /whoami,/kick,/nick,/msg,/reply,/help,/echo,/logout,/shutdown
+
 
 ## Installation
 
@@ -34,18 +37,14 @@
     ```sh
     ./gochatsrv
     ```
+   This will create a new database and admin user with the username "admin" and password "admin123".
 
 2. Connect to the server using a TCP client (e.g., `telnet`):
     ```sh
     telnet localhost 8080
     ```
 
-3. Use the following commands in the chat:
-    - `/whoami` - Display your user information
-    - `/kick <nickname>` - Kick a user (admin only)
-    - `/msg <nickname> <message>` - Send a private message
-    - `/nick <newNickname>` - Change your nickname
-    - `/shutdown <seconds>` - Shutdown the server after a delay (admin only)
+3. Login and change the admin password, then logout.
 
 ## Contributing
 
