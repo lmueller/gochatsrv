@@ -23,10 +23,12 @@ import (
 
 // User represents a user in the chat system.
 type User struct {
-	conn        net.Conn
-	nickname    string
-	privilege   int // 0 for regular users, 1 for admin
-	lastMsgFrom string
+	id          int      // Unique identifier for the user
+	username    string   // persisted Username of the user
+	privilege   int      // Privilege level (e.g., 0 for regular user, 1 for admin)
+	nickname    string   // Existing field for the user's nickname
+	conn        net.Conn // Connection object for the user
+	lastMsgFrom string   // Existing field for tracking the last message sender
 }
 
 // UserManager manages the users in the chat server.
@@ -240,14 +242,15 @@ func (um *UserManager) handleNewNick(user *User, newNickname string) {
 		return
 	}
 
-	logEvent(fmt.Sprintf("User %s changed nickname to %s", user.nickname, newNickname))
-	um.removeUser(user.nickname)
+	oldNickname := user.nickname
+	logEvent(fmt.Sprintf("User %s changed nickname to %s", oldNickname, newNickname))
+	um.removeUser(oldNickname)
 	user.nickname = newNickname
 	if !um.addUser(user) {
 		_ = um.sendMessageToUser(user, "Failed to update nickname. Please try again.")
 		return
 	}
-	um.broadcastMessage(fmt.Sprintf("%s is now: %s", user.nickname, newNickname))
+	um.broadcastMessage(fmt.Sprintf("%s is now: %s", oldNickname, user.nickname))
 }
 
 // handleKick removes a user from the chat server, kicking them off.
