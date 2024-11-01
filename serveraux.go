@@ -13,6 +13,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/lmueller/termcolor"
 	"net"
 	"strings"
 	"time"
@@ -58,16 +59,17 @@ func countdownWarnings(userManager *UserManager, remainingTime int) {
 			if remainingTime > 15*Minute { // More than 15 minutes
 				if remainingTime%(15*Minute) == 0 {
 					minutes := remainingTime / Minute
-					userManager.broadcastMessage(fmt.Sprintf("System Notice: SHUTDOWN in %d minutes", minutes))
+					msg := fmt.Sprintf("System Notice: SHUTDOWN in %d minutes", minutes)
+					userManager.broadcastSysMessage(msg)
 				}
 			} else if remainingTime <= 15*Minute && remainingTime > 1*Minute { // Between 1 and 15 minutes
 				if remainingTime%60 == 0 {
 					minutes := remainingTime / 60
-					userManager.broadcastMessage(fmt.Sprintf("System Notice: SHUTDOWN in %d minutes. Please log out now.", minutes))
+					userManager.broadcastSysMessage(fmt.Sprintf("System Notice: SHUTDOWN in %d minutes. Please log out now.", minutes))
 				}
 			} else if remainingTime <= 1*Minute { // Less than 1 minute
 				if remainingTime%10 == 0 && remainingTime > 0 {
-					userManager.broadcastMessage(fmt.Sprintf("System Notice: SHUTDOWN IMMINENT in %d seconds. LOG OUT NOW!", remainingTime))
+					userManager.broadcastSysMessage(fmt.Sprintf("System Notice: SHUTDOWN IMMINENT in %d seconds. LOG OUT NOW!", remainingTime))
 				}
 			}
 		}
@@ -113,6 +115,18 @@ func sendMessageToConn(conn net.Conn, msgs ...string) error {
 	w := bufio.NewWriter(conn)
 	for _, msg := range msgs {
 		if _, err := fmt.Fprintln(w, msg); err != nil {
+			return err
+		}
+	}
+	return w.Flush()
+}
+
+func sendSysMessageToConn(conn net.Conn, msgs ...string) error {
+	w := bufio.NewWriter(conn)
+	sysmsg := ""
+	for _, msg := range msgs {
+		sysmsg = termcolor.EncodeHTMLToTerm(tcServerTags, "<sys>"+msg+"</sys>")
+		if _, err := fmt.Fprintln(w, sysmsg); err != nil {
 			return err
 		}
 	}

@@ -11,6 +11,6 @@
 package main
 
 func main() {
-	server := &Server{}
+	server := &ChatServer{}
 	server.Run()
 }

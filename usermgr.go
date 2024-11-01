@@ -14,6 +14,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"github.com/lmueller/termcolor"
 	"net"
 	"sort"
 	"strings"
@@ -131,12 +132,32 @@ func (um *UserManager) unsafeSendMessageToUser(user *User, msgs ...string) error
 	return nil
 }
 
+func (um *UserManager) unsafeSendSysMessageToUser(user *User, msgs ...string) error {
+	err := sendSysMessageToConn(user.conn, msgs...)
+	if err != nil {
+		count := len(msgs)
+		logEvent(fmt.Sprintf("Error sending message to user %s: %v. %d messages not sent.", user.nickname, err, count))
+		delete(um.users, user.nickname)
+		return err
+	}
+	return nil
+}
+
 // broadcastMessage sends a message to all users.
 func (um *UserManager) broadcastMessage(msgs ...string) {
 	um.mu.Lock()
 	defer um.mu.Unlock()
 	for _, user := range um.users {
 		_ = um.unsafeSendMessageToUser(user, msgs...)
+	}
+}
+
+// broadcastMessage sends a message to all users.
+func (um *UserManager) broadcastSysMessage(msgs ...string) {
+	um.mu.Lock()
+	defer um.mu.Unlock()
+	for _, user := range um.users {
+		_ = um.unsafeSendSysMessageToUser(user, msgs...)
 	}
 }
 
@@ -163,11 +184,15 @@ func (um *UserManager) handlePrivateMessage(sender *User, targetNickname, messag
 
 	if sender == targetUser {
 		// Case when sender messages themselves
-		_ = um.sendMessageToUser(sender, fmt.Sprintf("You message yourself: %s", message))
+		_ = um.sendMessageToUser(sender, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>You whisper to yourself: %s</w>", message)))
 	} else {
 		// Case when sender messages another user
-		_ = um.sendMessageToUser(sender, fmt.Sprintf("You message %s: %s", targetUser.nickname, message))
-		_ = um.sendMessageToUser(targetUser, fmt.Sprintf("%s messages: %s", sender.nickname, message))
+		_ = um.sendMessageToUser(sender, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>You whisper %s: %s</w>", targetUser.nickname, message)))
+		if sender.privilege == 1 {
+			_ = um.sendMessageToUser(targetUser, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<aw>%s (admin) whispers to you: %s</ww>", sender.nickname, message)))
+		} else {
+			_ = um.sendMessageToUser(targetUser, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>%s whispers to you: %s</w>", sender.nickname, message)))
+		}
 	}
 }
 

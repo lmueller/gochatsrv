@@ -13,6 +13,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/lmueller/termcolor"
 	"log"
 	"net"
 	"os"
@@ -40,14 +41,16 @@ type ServerCommand struct {
 	Args    []string
 }
 
-type Server struct {
+type ChatServer struct {
 	listener        net.Listener
 	userManager     *UserManager
 	commands        chan ServerCommand
 	shutdownOngoing bool
 }
 
-func (s *Server) handleUserInput(user *User, reader *bufio.Reader) {
+var tcServerTags *termcolor.CustomTagManager
+
+func (s *ChatServer) handleUserInput(user *User, reader *bufio.Reader) {
 	for {
 		msg, err := reader.ReadString('\n')
 		if err != nil {
@@ -72,7 +75,7 @@ func (s *Server) handleUserInput(user *User, reader *bufio.Reader) {
 	}
 }
 
-func (s *Server) handleWhoAmI(user *User) {
+func (s *ChatServer) handleWhoAmI(user *User) {
 	if user.privilege == 1 {
 		_ = s.userManager.sendMessageToUser(user, fmt.Sprintf("You are: %s (admin) (%s)\n", user.nickname, user.conn.RemoteAddr().String()))
 	} else {
@@ -80,11 +83,11 @@ func (s *Server) handleWhoAmI(user *User) {
 	}
 }
 
-func (s *Server) terminateServer(seconds int) {
+func (s *ChatServer) terminateServer(seconds int) {
 	if seconds > 0 {
-		msg := fmt.Sprintf("Server shutdown has been initiated; server will shut down in %d minutes, %d seconds.", seconds/60, seconds%60)
+		msg := fmt.Sprintf("ChatServer shutdown has been initiated; server will shut down in %d minutes, %d seconds.", seconds/60, seconds%60)
 		log.Println(msg)
-		s.userManager.broadcastMessage(msg)
+		s.userManager.broadcastSysMessage(msg)
 
 		// Start the warning goroutine
 		go countdownWarnings(s.userManager, seconds)
@@ -100,11 +103,11 @@ func (s *Server) terminateServer(seconds int) {
 	}
 }
 
-func (s *Server) terminateServerNow() {
+func (s *ChatServer) terminateServerNow() {
 	// Notify users that the server is shutting down immediately
 	s.shutdownOngoing = true
-	msg := "System Notice: Server is shutting down NOW. Please reconnect later."
-	s.userManager.broadcastMessage(msg)
+	msg := "System Notice: ChatServer is shutting down NOW. Please reconnect later."
+	s.userManager.broadcastSysMessage(msg)
 	logEvent(msg)
 
 	// Close the listener
@@ -145,7 +148,7 @@ func (s *Server) terminateServerNow() {
 	}
 }
 
-func (s *Server) waitForConnectionsClosed(wg *sync.WaitGroup) time.Duration {
+func (s *ChatServer) waitForConnectionsClosed(wg *sync.WaitGroup) time.Duration {
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -159,7 +162,7 @@ func (s *Server) waitForConnectionsClosed(wg *sync.WaitGroup) time.Duration {
 	}
 }
 
-func (s *Server) parseCommand(user *User, input string) ServerCommand {
+func (s *ChatServer) parseCommand(user *User, input string) ServerCommand {
 	input = strings.TrimSpace(input) // No need to re-trim since it's already done in handleUserInput
 
 	// Remove the leading '/' to get the command
@@ -178,11 +181,60 @@ func (s *Server) parseCommand(user *User, input string) ServerCommand {
 	}
 }
 
-func (s *Server) commandDispatcher() {
+func (s *ChatServer) handleEcho(user *User, args []string) {
+	if len(args) == 0 {
+		_ = s.userManager.sendMessageToUser(user, "Usage: /echo <message>")
+		return
+	}
+	msg := strings.Join(args, " ")
+	txt := msg
+	_ = s.userManager.sendMessageToUser(user, fmt.Sprintf("Echo: %s", txt))
+	logEvent(txt)
+}
+
+func (s *ChatServer) handleHelp(user *User) {
+	helpMsg := []string{
+		"<title>Available commands:</title>\r",
+		"<cmd>/whoami</cmd> - Display your current nickname and privilege level\r",
+		"<cmd>/echo</cmd> &lt;message&gt; - Echo back the message\r",
+		"<cmd>/msg</cmd> &lt;nickname&gt; &lt;message&gt; - Send a private message\r",
+		"<cmd>/bye</cmd> or /logout - Logout from the chat\r",
+		"<cmd>/who</cmd> - List all users in the chat\r",
+		"<cmd>/nick</cmd> &lt;newNickname&gt; - Change your nickname\r",
+	}
+	if user.privilege == 1 {
+		adminCommands := []string{
+			"\r<title>Admin commands:</title>\r",
+			"<cmd>/kick</cmd> &lt;nickname&gt; [reason] - Kick a user\r",
+			"<cmd>/shutdown</cmd> &lt;seconds&gt; - Shutdown the server\r",
+		}
+		helpMsg = append(helpMsg, adminCommands...)
+	}
+	msg := strings.Join(helpMsg, "\n")
+	msg = termcolor.EncodeHTMLToTerm(tcServerTags, msg)
+	_ = s.userManager.sendMessageToUser(user, msg)
+}
+
+func (s *ChatServer) handleTest(user *User) {
+	_ = s.userManager.sendMessageToUser(user, "Test command received.")
+	src := "[src4] This is <span style=\"color: blue; font-weight: bold\">This is <u>blue and bold</u> with <span style=\"color: green\">green nested text</span></span> and normal text"
+	encoded := termcolor.EncodeHTMLToTerm(tcServerTags, src)
+	_ = s.userManager.sendMessageToUser(user, encoded)
+	fmt.Println(encoded)
+	_ = s.userManager.sendMessageToUser(user, "This should be normal text again")
+}
+
+func (s *ChatServer) commandDispatcher() {
 	for cmd := range s.commands {
 		switch cmd.Command {
+		case "help":
+			s.handleHelp(cmd.User)
+		case "test":
+			s.handleTest(cmd.User)
 		case "whoami":
 			s.handleWhoAmI(cmd.User)
+		case "echo":
+			s.handleEcho(cmd.User, cmd.Args)
 		case "kick":
 			if cmd.User.privilege == 0 {
 				_ = s.userManager.sendMessageToUser(cmd.User, ErrPrivilege)
@@ -244,7 +296,7 @@ func (s *Server) commandDispatcher() {
 	}
 }
 
-func (s *Server) handleNewClient(conn net.Conn) {
+func (s *ChatServer) handleNewClient(conn net.Conn) {
 	defer func() {
 		err := conn.Close()
 		if err != nil {
@@ -319,7 +371,20 @@ func (s *Server) handleNewClient(conn net.Conn) {
 	_ = sendMessageToConn(conn, msg)
 }
 
-func (s *Server) Run() {
+func (s *ChatServer) setTermColorCustomTags() {
+	tcServerTags = termcolor.NewCustomTagManager()
+	tcServerTags.Add("error", "br bold bgk") // bright red bold on black
+	tcServerTags.Add("warning", "y bold")    // yellow bold
+	tcServerTags.Add("success", "bg bold")   // bright green bold
+	tcServerTags.Add("info", "bc u")         // bright cyan underlined
+	tcServerTags.Add("title", "bw bold u")   // bright cyan underlined
+	tcServerTags.Add("cmd", "g u")           // bright cyan underlined
+	tcServerTags.Add("w", "m")               // magenta
+	tcServerTags.Add("aw", "bb bold")        // blue
+	tcServerTags.Add("sys", "by bold")       // bright yellow
+}
+
+func (s *ChatServer) Run() {
 	var err error
 	s.listener, err = net.Listen("tcp", fmt.Sprintf(":%d", serverPort))
 	if err != nil {
@@ -336,6 +401,7 @@ func (s *Server) Run() {
 	s.userManager = &UserManager{
 		users: make(map[string]*User),
 	}
+	s.setTermColorCustomTags()
 
 	// Start up goroutines for command handling
 	go s.commandDispatcher()
@@ -349,17 +415,17 @@ func (s *Server) Run() {
 		s.commands <- ServerCommand{
 			Command: "shutdown",
 			User:    nil, // No user associated with this command
-			Args:    []string{"10"},
+			Args:    []string{"0"},
 		}
 	}()
 
-	logEvent("Server running on :8080")
+	logEvent("ChatServer running on :8080")
 
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
 			if err.Error() == "use of closed network connection" {
-				logEvent(fmt.Sprintf("Server stopped accepting new connections."))
+				logEvent(fmt.Sprintf("ChatServer stopped accepting new connections."))
 				return
 			}
 			if !s.shutdownOngoing {
