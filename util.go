@@ -7,7 +7,8 @@
 // Author: Lutz Mueller <lmuellerhome@gmail.com>
 // License: proprietary. All rights reserved.
 //
-// Version: v0.1.0
+// Version: see github.com/lmueller/gochatsrv
+
 package main
 
 import (

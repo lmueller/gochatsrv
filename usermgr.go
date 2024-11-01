@@ -8,7 +8,7 @@
 // Author: Lutz Mueller <lmuellerhome@gmail.com>
 // License: proprietary. All rights reserved.
 //
-// Version: v0.1.0
+// Version: see github.com/lmueller/gochatsrv
 package main
 
 import (
@@ -23,15 +23,24 @@ import (
 
 // User represents a user in the chat system.
 type User struct {
-	conn      net.Conn
-	nickname  string
-	privilege int // 0 for regular users, 1 for admin
+	conn        net.Conn
+	nickname    string
+	privilege   int // 0 for regular users, 1 for admin
+	lastMsgFrom string
 }
 
 // UserManager manages the users in the chat server.
 type UserManager struct {
 	users map[string]*User
 	mu    sync.Mutex
+}
+
+func (um *UserManager) handleWhoAmI(user *User) {
+	if user.privilege == 1 {
+		_ = um.sendMessageToUser(user, fmt.Sprintf("You are: %s (admin) (%s)\n", user.nickname, user.conn.RemoteAddr().String()))
+	} else {
+		_ = um.sendMessageToUser(user, fmt.Sprintf("You are: %s (user)\n", user.nickname))
+	}
 }
 
 // FindUser looks up a user by their nickname.
@@ -174,7 +183,7 @@ func (um *UserManager) broadcastMessageExcept(excludedUserNickname string, msgs 
 }
 
 // handlePrivateMessage handles the sending of a private message, compare /msg,/whisper or similar
-func (um *UserManager) handlePrivateMessage(sender *User, targetNickname, message string) {
+func (um *UserManager) handlePrivateMessage(sender *User, isReply bool, targetNickname, message string) {
 	targetUser := um.FindUser(targetNickname)
 	if targetUser == nil {
 		logEvent(fmt.Sprintf("Private message failed: user %s not found", targetNickname))
@@ -187,12 +196,18 @@ func (um *UserManager) handlePrivateMessage(sender *User, targetNickname, messag
 		_ = um.sendMessageToUser(sender, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>You whisper to yourself: %s</w>", message)))
 	} else {
 		// Case when sender messages another user
-		_ = um.sendMessageToUser(sender, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>You whisper %s: %s</w>", targetUser.nickname, message)))
-		if sender.privilege == 1 {
-			_ = um.sendMessageToUser(targetUser, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<aw>%s (admin) whispers to you: %s</ww>", sender.nickname, message)))
-		} else {
-			_ = um.sendMessageToUser(targetUser, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>%s whispers to you: %s</w>", sender.nickname, message)))
+		msgtype := "whisper whispers"
+		if isReply {
+			msgtype = "reply replies"
 		}
+		_ = um.sendMessageToUser(sender, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>You %s to %s: %s</w>", strings.Fields(msgtype)[0], targetUser.nickname, message)))
+		if sender.privilege == 1 {
+			_ = um.sendMessageToUser(targetUser, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<aw>%s (admin) %s: %s</ww>", sender.nickname, strings.Fields(msgtype)[1], message)))
+		} else {
+			_ = um.sendMessageToUser(targetUser, termcolor.EncodeHTMLToTerm(tcServerTags, fmt.Sprintf("<w>%s %s: %s</w>", sender.nickname, strings.Fields(msgtype)[1], message)))
+		}
+		// Update the lastPrivateMessageFrom field
+		targetUser.lastMsgFrom = sender.nickname
 	}
 }
 

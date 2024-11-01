@@ -7,7 +7,8 @@
 // Author: Lutz Mueller <lmuellerhome@gmail.com>
 // License: proprietary. All rights reserved.
 //
-// Version: v0.1.0
+// Version: see github.com/lmueller/gochatsrv
+
 package main
 
 import (
@@ -26,10 +27,10 @@ import (
 )
 
 const (
-	serverPort       = 8080
-	maxLoginAttempts = 3
-	loginTimeout     = 10 * time.Second
-
+	serverPort             = 8080
+	maxLoginAttempts       = 3
+	loginTimeout           = 10 * time.Second
+	serverName             = "ChatServer"
 	ErrPrivilege           = "this is a system command, must be admin user to execute"
 	ErrIllegalNickname     = "illegal nickname"
 	ErrInvalidShutdownTime = "invalid shutdown time, specify <#seconds>"
@@ -72,14 +73,6 @@ func (s *ChatServer) handleUserInput(user *User, reader *bufio.Reader) {
 			// Broadcast the message to all users
 			s.userManager.broadcastMessage(fmt.Sprintf("%s: %s", user.nickname, msg))
 		}
-	}
-}
-
-func (s *ChatServer) handleWhoAmI(user *User) {
-	if user.privilege == 1 {
-		_ = s.userManager.sendMessageToUser(user, fmt.Sprintf("You are: %s (admin) (%s)\n", user.nickname, user.conn.RemoteAddr().String()))
-	} else {
-		_ = s.userManager.sendMessageToUser(user, fmt.Sprintf("You are: %s (user)\n", user.nickname))
 	}
 }
 
@@ -224,6 +217,8 @@ func (s *ChatServer) handleTest(user *User) {
 	_ = s.userManager.sendMessageToUser(user, "This should be normal text again")
 }
 
+// commandDispatcher is the main command processing loop for the ChatServer. It receives commands from clients
+// and dispatches them to the appropriate handler functions based on the command name.
 func (s *ChatServer) commandDispatcher() {
 	for cmd := range s.commands {
 		switch cmd.Command {
@@ -232,7 +227,7 @@ func (s *ChatServer) commandDispatcher() {
 		case "test":
 			s.handleTest(cmd.User)
 		case "whoami":
-			s.handleWhoAmI(cmd.User)
+			s.userManager.handleWhoAmI(cmd.User)
 		case "echo":
 			s.handleEcho(cmd.User, cmd.Args)
 		case "kick":
@@ -261,10 +256,22 @@ func (s *ChatServer) commandDispatcher() {
 				if strings.Trim(msg, " ") == "" {
 					_ = s.userManager.sendMessageToUser(cmd.User, "Message what?")
 				} else {
-					s.userManager.handlePrivateMessage(cmd.User, targetNickname, msg)
+					s.userManager.handlePrivateMessage(cmd.User, false, targetNickname, msg)
 				}
 			} else {
 				_ = s.userManager.sendMessageToUser(cmd.User, "Invalid message format. Use: /msg <nickname> <message>")
+			}
+		case "r", "reply":
+			if cmd.User.lastMsgFrom == "" {
+				_ = s.userManager.sendMessageToUser(cmd.User, "No user to reply to.")
+			} else {
+				msg := strings.Join(cmd.Args, " ")
+				if strings.Trim(msg, " ") == "" {
+					_ = s.userManager.sendMessageToUser(cmd.User, "Invalid reply format. Use: /r <message>")
+				} else {
+					//_ = s.userManager.sendMessageToUser(cmd.User, fmt.Sprintf("You reply: %s", msg))
+					s.userManager.handlePrivateMessage(cmd.User, true, cmd.User.lastMsgFrom, msg)
+				}
 			}
 		case "bye", "logout":
 			s.userManager.handleUserLogout(cmd.User)
@@ -278,15 +285,19 @@ func (s *ChatServer) commandDispatcher() {
 				_ = s.userManager.sendMessageToUser(cmd.User, "Please provide a new nickname. Use: /nick <newNickname>")
 			}
 		case "shutdown":
-			var cts int = 0
-			var err error
-			if len(cmd.Args) > 0 {
-				cts, err = strconv.Atoi(cmd.Args[0])
-				if err != nil || cts < 0 {
-					_ = s.userManager.sendMessageToUser(cmd.User, ErrInvalidShutdownTime)
-					continue
+			if cmd.User.privilege == 0 {
+				_ = s.userManager.sendMessageToUser(cmd.User, ErrPrivilege)
+			} else {
+				var cts int = 0
+				var err error
+				if len(cmd.Args) > 0 {
+					cts, err = strconv.Atoi(cmd.Args[0])
+					if err != nil || cts < 0 {
+						_ = s.userManager.sendMessageToUser(cmd.User, ErrInvalidShutdownTime)
+						continue
+					}
+					s.terminateServer(cts)
 				}
-				s.terminateServer(cts)
 			}
 			return // Exit commandDispatcher to stop processing commands
 		default:
@@ -304,6 +315,7 @@ func (s *ChatServer) handleNewClient(conn net.Conn) {
 		}
 	}()
 
+	_ = sendMessageToConn(conn, fmt.Sprintf("Welcome to %s Please enter your nickname: ", serverName))
 	reader := bufio.NewReader(conn)
 	timeoutChan := time.After(loginTimeout)
 
@@ -338,9 +350,10 @@ func (s *ChatServer) handleNewClient(conn net.Conn) {
 			}
 
 			user := &User{
-				conn:      conn,
-				nickname:  nickname,
-				privilege: 0,
+				conn:        conn,
+				nickname:    nickname,
+				privilege:   0,
+				lastMsgFrom: "",
 			}
 
 			if s.userManager.addUser(user) {
