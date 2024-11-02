@@ -10,7 +10,7 @@ broadcast/single channel (for now)
 login/pw through sqlite3,
 terminal colors through github.com/lmueller/termcolor
 timeable shutdown with warning message ticker
-features: /who, /whoami,/kick,/nick,/msg,/reply,/help,/echo,/logout,/shutdown
+features: /who,/whoami,/kick,/nick,/msg,/reply,/help,/echo,/logout,/shutdown,/createuser,/deleteuser,/enumusers,/priv
 
 
 ## Installation

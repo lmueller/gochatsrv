@@ -12,16 +12,17 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	_ "github.com/mattn/go-sqlite3" // Import the SQLite driver
 	"golang.org/x/crypto/bcrypt"
 	"log"
 	"os"
-
-	_ "github.com/mattn/go-sqlite3" // Import the SQLite driver
 )
 
 var DBFileName = "./gochatsrv.db"
 
+/*
 func hashPassword(password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -34,6 +35,7 @@ func checkPasswordHash(password, hash string) bool {
 	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
 	return err == nil
 }
+*/
 
 func initDB() (*sql.DB, error) {
 
@@ -133,7 +135,7 @@ func authenticateUser(db *sql.DB, username, password string) (*User, error) {
 	err := db.QueryRow("SELECT id, username, password_hash, privilege FROM users WHERE username = ?", username).
 		Scan(&user.id, &user.username, &hashedPassword, &user.privilege)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if errors.Is(err, sql.ErrNoRows) {
 			return nil, fmt.Errorf("user not found")
 		}
 		return nil, err
@@ -146,6 +148,52 @@ func authenticateUser(db *sql.DB, username, password string) (*User, error) {
 	}
 
 	return &user, nil
+}
+
+func updatePassword(db *sql.DB, username, newPasswordHash string) error {
+	_, err := db.Exec("UPDATE users SET password_hash = ? WHERE username = ?", newPasswordHash, username)
+	return err
+}
+
+func updatePrivilege(db *sql.DB, username string, newPrivilege int) error {
+	_, err := db.Exec("UPDATE users SET privilege = ? WHERE username = ?", newPrivilege, username)
+	return err
+}
+
+func deleteUser(db *sql.DB, username string) error {
+	_, err := db.Exec("DELETE FROM users WHERE username = ?", username)
+	return err
+}
+
+func enumUsers(db *sql.DB) ([]string, error) {
+	rows, err := db.Query("SELECT username, privilege FROM users order by privilege desc, username")
+	if err != nil {
+		return nil, err
+	}
+	defer func(rows *sql.Rows) {
+		_ = rows.Close()
+	}(rows)
+
+	var usernames []string
+	for rows.Next() {
+		var username string
+		var privilege int
+		if err := rows.Scan(&username, &privilege); err != nil {
+			return nil, err
+		}
+		if privilege == 1 {
+			usernames = append(usernames, username+" (admin)")
+		} else {
+			usernames = append(usernames, username)
+		}
+	}
+
+	// Check for errors from iterating over rows.
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return usernames, nil
 }
 
 /*

@@ -191,18 +191,26 @@ func (s *ChatServer) handleHelp(user *User) {
 		"<cmd>/whoami</cmd> - Display your current nickname and privilege level\r",
 		"<cmd>/echo</cmd> &lt;message&gt; - Echo back the message\r",
 		"<cmd>/msg</cmd> &lt;nickname&gt; &lt;message&gt; - Send a private message\r",
+		"<cmd>/reply</cmd> &lt;message&gt; - Reply to the last private message received\r",
 		"<cmd>/bye</cmd> or /logout - Logout from the chat\r",
 		"<cmd>/who</cmd> - List all users in the chat\r",
 		"<cmd>/nick</cmd> &lt;newNickname&gt; - Change your nickname\r",
+		"<cmd>/help</cmd> - Display this help information\r",
 	}
-	if user.privilege == 1 {
+
+	if user.privilege > 0 { // Assuming privilege > 0 means admin
 		adminCommands := []string{
 			"\r<title>Admin commands:</title>\r",
+			"<cmd>/createuser</cmd> &lt;username&gt; &lt;password&gt; - Create a new user\r",
+			"<cmd>/priv</cmd> &lt;username&gt; &lt;level&gt; - Change user privileges\r",
+			"<cmd>/deleteuser</cmd> &lt;username&gt; - Delete a user\r",
+			"<cmd>/enumusers</cmd> - List all users\r",
 			"<cmd>/kick</cmd> &lt;nickname&gt; [reason] - Kick a user\r",
-			"<cmd>/shutdown</cmd> &lt;seconds&gt; - Shutdown the server\r",
+			"<cmd>/shutdown</cmd> [seconds] - Shutdown the server with an optional countdown\r",
 		}
 		helpMsg = append(helpMsg, adminCommands...)
 	}
+
 	msg := strings.Join(helpMsg, "\n")
 	msg = termcolor.EncodeHTMLToTerm(tcServerTags, msg)
 	_ = s.userManager.sendMessageToUser(user, msg)
@@ -292,11 +300,21 @@ func (s *ChatServer) commandDispatcher() {
 			} else {
 				_ = s.userManager.sendMessageToUser(cmd.User, "Please provide a new nickname. Use: /nick <newNickname>")
 			}
+		case "passwd":
+			s.userManager.handleChangePassword(cmd.User, cmd.Args) // admins can reset passwords
+		case "createuser":
+			s.userManager.handleCreateUser(cmd.User, cmd.Args) // admin command
+		case "priv":
+			s.userManager.handleChangePrivilege(cmd.User, cmd.Args) // admin command
+		case "deleteuser":
+			s.userManager.handleDeleteUser(cmd.User, cmd.Args) // admin command
+		case "enumusers":
+			s.userManager.handleEnumUsers(cmd.User) // admin command
 		case "shutdown":
 			if cmd.User.privilege == 0 {
 				_ = s.userManager.sendMessageToUser(cmd.User, ErrPrivilege)
 			} else {
-				var cts int = 0
+				var cts = 0
 				var err error
 				if len(cmd.Args) > 0 {
 					cts, err = strconv.Atoi(cmd.Args[0])

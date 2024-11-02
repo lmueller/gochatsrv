@@ -15,8 +15,10 @@ import (
 	"errors"
 	"fmt"
 	"github.com/lmueller/termcolor"
+	"golang.org/x/crypto/bcrypt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -305,4 +307,149 @@ func (um *UserManager) handleKick(targetNickname, kickMessage string, admin *Use
 	}
 
 	return nil // Kick successful
+}
+
+func changePasswordForUser(username, newPassword string) error {
+	// Hash the new password
+	newPasswordHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("error hashing new password: %v", err)
+	}
+
+	// Update the password in the database
+	return updatePassword(DB, username, string(newPasswordHash))
+}
+
+func (um *UserManager) handleChangePassword(user *User, args []string) {
+	if len(args) != 2 {
+		_ = um.sendMessageToUser(user, "Usage: /passwd <username> <newPassword>")
+		return
+	}
+
+	targetUsername := args[0]
+	newPassword := args[1]
+
+	// Check if the user is an admin
+	if user.privilege == 1 {
+		// Admin can change any user's password
+		err := changePasswordForUser(targetUsername, newPassword)
+		if err != nil {
+			_ = um.sendMessageToUser(user, fmt.Sprintf("Error changing password for %s: %v", targetUsername, err))
+		} else {
+			_ = um.sendMessageToUser(user, fmt.Sprintf("Password for %s updated successfully.", targetUsername))
+		}
+	} else {
+		// Regular users can only change their own password
+		if targetUsername != user.username {
+			_ = um.sendMessageToUser(user, "You can only change your own password.")
+			return
+		}
+
+		err := changePasswordForUser(user.username, newPassword)
+		if err != nil {
+			_ = um.sendMessageToUser(user, "Error updating your password. Please try again later.")
+		} else {
+			_ = um.sendMessageToUser(user, "Your password has been updated successfully.")
+		}
+	}
+}
+
+func (um *UserManager) handleCreateUser(user *User, args []string) {
+	if user.privilege < 1 {
+		_ = um.sendMessageToUser(user, ErrPrivilege)
+		return
+	}
+	if len(args) != 2 {
+		_ = um.sendMessageToUser(user, "Usage: /createuser <username> <password>")
+		return
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(args[1]), bcrypt.DefaultCost)
+	if err != nil {
+		_ = um.sendMessageToUser(user, "Error hashing password. Please try again later.")
+		return
+	}
+	err = createUser(DB, args[0], string(passwordHash), 0)
+	if err != nil {
+		_ = um.sendMessageToUser(user, fmt.Sprintf("Error creating user: %v", err))
+		return
+	} else {
+		_ = um.sendMessageToUser(user, fmt.Sprintf("User %s created successfully.", args[0]))
+	}
+}
+
+func (um *UserManager) handleChangePrivilege(user *User, args []string) {
+	syntax := "Usage: /priv <username> <privilege> (0: user, 1: admin)"
+	if user.privilege < 1 {
+		_ = um.sendMessageToUser(user, ErrPrivilege)
+		return
+	}
+	if len(args) != 2 {
+		_ = um.sendMessageToUser(user, syntax)
+		return
+	}
+	if strings.EqualFold(args[1], "admin") {
+		_ = um.sendMessageToUser(user, "Privilege level change for user 'admin' is not allowed.")
+		return
+	}
+	newPrivilege, err := strconv.Atoi(args[1])
+	if err != nil {
+		_ = um.sendMessageToUser(user, syntax)
+		return
+	}
+	err = updatePrivilege(DB, args[0], newPrivilege)
+	if err != nil {
+		_ = um.sendMessageToUser(user, fmt.Sprintf("Error changing privilege for user %s: %v", args[0], err))
+		return
+	}
+	_ = um.sendMessageToUser(user, fmt.Sprintf("Privilege for user %s updated successfully. User must re-login.", args[0]))
+}
+
+func (um *UserManager) handleDeleteUser(user *User, args []string) {
+	syntax := "Usage: /deleteuser <username>"
+	if user.privilege < 1 {
+		_ = um.sendMessageToUser(user, ErrPrivilege)
+		return
+	}
+	if len(args) != 1 {
+		_ = um.sendMessageToUser(user, syntax)
+		return
+	}
+	targetUsername := args[0]
+	if strings.EqualFold(targetUsername, user.username) {
+		_ = um.sendMessageToUser(user, "Deleting current user is not allowed.")
+		return
+	}
+
+	// Check if the user is currently logged in
+	targetUser := um.FindUser(targetUsername)
+	if targetUser != nil {
+		// Kick the user if they are logged in
+		err := um.handleKick(targetUsername, "User deleted by administrator", user)
+		if err != nil {
+			_ = um.sendMessageToUser(user, fmt.Sprintf("Error kicking user %s: %v", targetUsername, err))
+			return
+		}
+	}
+
+	// Proceed to delete the user from the database
+	err := deleteUser(DB, targetUsername)
+	if err != nil {
+		_ = um.sendMessageToUser(user, fmt.Sprintf("Error deleting user %s: %v", targetUsername, err))
+		return
+	}
+	_ = um.sendMessageToUser(user, fmt.Sprintf("User %s deleted successfully.", targetUsername))
+}
+
+func (um *UserManager) handleEnumUsers(user *User) {
+	if user.privilege < 1 {
+		_ = um.sendMessageToUser(user, ErrPrivilege)
+		return
+	}
+	dbusers, err := enumUsers(DB)
+	if err != nil {
+		_ = um.sendMessageToUser(user, fmt.Sprintf("Error enumerating users: %v", err))
+		return
+	}
+	msg := strings.Join(dbusers, "\n")
+	_ = um.sendMessageToUser(user, msg+"\n(End of list)")
 }
